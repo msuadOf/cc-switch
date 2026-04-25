@@ -2,6 +2,18 @@ name: Release
 
 on:
   workflow_dispatch:
+    inputs:
+      target:
+        description: 'Release target to build'
+        required: true
+        default: all
+        type: choice
+        options:
+          - all
+          - linux-x86_64
+          - linux-arm64
+          - macos-universal
+          - windows-x86_64
   push:
     tags:
       - 'v*'
@@ -10,20 +22,52 @@ permissions:
   contents: write
 
 concurrency:
-  group: release-${{ github.ref_name }}
+  group: release-${{ github.ref_name }}-${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}
   cancel-in-progress: true
 
 jobs:
+  plan-release:
+    name: Plan release targets
+    runs-on: ubuntu-22.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+    steps:
+      - name: Select targets
+        id: matrix
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARGET="${{ github.event_name == 'workflow_dispatch' && inputs.target || 'all' }}"
+          case "$TARGET" in
+            all)
+              MATRIX='{"include":[{"target":"windows-x86_64","os":"windows-2022","arch":"x86_64"},{"target":"linux-x86_64","os":"ubuntu-22.04","arch":"x86_64"},{"target":"linux-arm64","os":"ubuntu-22.04-arm","arch":"arm64"},{"target":"macos-universal","os":"macos-14","arch":"universal"}]}'
+              ;;
+            windows-x86_64)
+              MATRIX='{"include":[{"target":"windows-x86_64","os":"windows-2022","arch":"x86_64"}]}'
+              ;;
+            linux-x86_64)
+              MATRIX='{"include":[{"target":"linux-x86_64","os":"ubuntu-22.04","arch":"x86_64"}]}'
+              ;;
+            linux-arm64)
+              MATRIX='{"include":[{"target":"linux-arm64","os":"ubuntu-22.04-arm","arch":"arm64"}]}'
+              ;;
+            macos-universal)
+              MATRIX='{"include":[{"target":"macos-universal","os":"macos-14","arch":"universal"}]}'
+              ;;
+            *)
+              echo "Unknown release target: $TARGET" >&2
+              exit 1
+              ;;
+          esac
+          echo "matrix=$MATRIX" >> "$GITHUB_OUTPUT"
+
   release:
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
+    needs: plan-release
     strategy:
-      matrix:
-        include:
-          - os: windows-2022
-          - os: ubuntu-22.04
-          - os: ubuntu-22.04-arm
-            arch: arm64
-          - os: macos-14
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan-release.outputs.matrix) }}
 
     steps:
       - name: Checkout
@@ -575,6 +619,7 @@ jobs:
     name: Publish GitHub Release
     runs-on: ubuntu-22.04
     needs: release
+    if: ${{ always() && needs.release.result != 'skipped' }}
     permissions:
       contents: write
     steps:
